@@ -3,7 +3,7 @@
 This is the official repository for the evaluation code of KOFFVQA.
 
 * [Dataset](https://huggingface.co/datasets/maum-ai/KOFFVQA_Data)
-* Report (coming soon)
+* [Report](https://arxiv.org/abs/2503.23730)
 * [Leaderboard](https://huggingface.co/spaces/maum-ai/KOFFVQA-Leaderboard)
 
 ## About KOFFVQA
