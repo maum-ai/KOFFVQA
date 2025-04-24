@@ -38,7 +38,7 @@ class base_judge(object):
         if isinstance(arc_class, str):
             arc_class = getattr(transformers, arc_class)
         device = 'auto' if kwargs.get('auto_device', False) else 'cuda'
-        model = arc_class.from_pretrained(judgepath, device_map=device, torch_dtype='auto', attn_implementation="flash_attention_2", trust_remote_code=True)
+        model = arc_class.from_pretrained(judgepath, device_map=device, torch_dtype='auto', trust_remote_code=True)
         self.model = model.eval()
         self.gen_kwargs = gen_kwargs
         self.kwargs = kwargs

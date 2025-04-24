@@ -4,6 +4,8 @@ from time import sleep
 import random
 
 from PIL import Image
+import base64
+from io import BytesIO
 
 import torch
 import torchvision.transforms as transforms
@@ -53,6 +55,22 @@ class base_model(object):
         return self.processor.decode(output[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
 
 
+class qwen2d5omni(base_model):
+    def __init__(self, arc_class, modelpath:str, adapterpath:str='', gen_kwargs:dict={}, **kwargs) -> None:
+        from transformers import Qwen2_5OmniModel, Qwen2_5OmniProcessor
+        self.processor = Qwen2_5OmniProcessor.from_pretrained(modelpath, trust_remote_code=True)
+        # device = 'auto' if kwargs.get('auto_device', False) else 'cuda'
+        device = 'cuda'
+        model = Qwen2_5OmniModel.from_pretrained(modelpath, device_map=device, torch_dtype='auto', trust_remote_code=True, enable_audio_output=False)
+        self.model = model.eval()
+        if adapterpath!='':
+            self.model.load_adapter(adapterpath)
+        self.gen_kwargs = gen_kwargs
+        self.kwargs = kwargs
+        self.system_prompt = kwargs.get('sys_prompt', '')
+class use_auto(base_model):
+    def __init__(self, arc_class, modelpath, adapterpath = '', gen_kwargs = {}, **kwargs):
+        super().__init__(AutoModelForCausalLM, modelpath, adapterpath, gen_kwargs, **kwargs)
 class use_automodel_and_tokenizer(base_model):
     def __init__(self, arc_class, modelpath: str, adapterpath: str = '', gen_kwargs: dict = {}, **kwargs) -> None:
         super().__init__(AutoModel, modelpath, adapterpath, gen_kwargs, **kwargs)
@@ -274,6 +292,54 @@ class phi3v(base_model):
         output = self.model.generate(**inputs, eos_token_id=self.processor.tokenizer.eos_token_id, **self.gen_kwargs)
         return self.processor.decode(output[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
 
+class phi4m(base_model):
+    def __init__(self, arc_class, modelpath, adapterpath = '', gen_kwargs = {}, **kwargs):
+        self.processor = AutoProcessor.from_pretrained(modelpath, trust_remote_code=True, num_crops=16)
+        device = 'auto' if kwargs.get('auto_device', False) else 'cuda'
+        model = AutoModelForCausalLM.from_pretrained(modelpath, device_map=device, torch_dtype='auto', trust_remote_code=True)
+        self.model = model.eval()
+        if adapterpath!='':
+            self.model.load_adapter(adapterpath)
+        self.gen_kwargs = gen_kwargs
+        self.kwargs = kwargs
+        self.generation_config = GenerationConfig.from_pretrained(modelpath)
+    def generate(self, image, question):
+        prompt = f'<|user|><|image_1|>{question}<|end|><|assistant|>'
+        inputs = self.processor(images=image, text=prompt, return_tensors='pt').to('cuda')
+        output = self.model.generate(**inputs, generation_config=self.generation_config, **self.gen_kwargs)
+        return self.processor.decode(output[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+
+class hyperclovax(base_model):
+    def __init__(self, arc_class, modelpath: str, adapterpath: str = '', gen_kwargs: dict = {}, **kwargs) -> None:
+        self.processor = AutoProcessor.from_pretrained(modelpath, trust_remote_code=True)
+        device = 'cuda'
+        model = AutoModelForCausalLM.from_pretrained(modelpath, device_map=device, torch_dtype=torch.bfloat16, trust_remote_code=True)
+        self.model = model.eval()
+        if adapterpath!='':
+            self.model.load_adapter(adapterpath)
+        self.gen_kwargs = gen_kwargs
+        self.kwargs = kwargs
+        self.system_prompt = kwargs.get('sys_prompt', '')
+        self.tokenizer = AutoTokenizer.from_pretrained(modelpath, trust_remote_code=True)
+    def generate(self, image: Image.Image, question: str) -> str:
+        messages = []
+
+        buffered = BytesIO()
+        image.save(buffered, format="JPEG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+        img_base64 = f"data:image/jpeg;base64,{img_base64}"
+
+        messages.append({'role': 'user', 'content': {'type': 'image', 'image': img_base64}})
+        messages.append({'role': 'user', 'content': {'type': 'text', 'text': question}})
+
+        new_vlm_chat, all_images, is_video_list = self.processor.load_images_videos(messages)
+        preprocessed = self.processor(all_images, is_video_list=is_video_list).to(dtype=self.model.dtype)
+        input_ids = self.tokenizer.apply_chat_template(new_vlm_chat, return_tensors="pt", tokenize=True, add_generation_prompt=True)
+        input_ids = input_ids.to(self.model.device)
+
+        output = self.model.generate(input_ids=input_ids, **self.gen_kwargs, **preprocessed)
+
+        return self.tokenizer.decode(output[0], skip_special_tokens=True)
 
 class api_model(base_model):
     def __init__(self, arc_class, modelpath: str, adapterpath: str = '', gen_kwargs: dict = {}, **kwargs) -> None:
@@ -379,10 +445,14 @@ def auto_model(modelpath:str, adapterpath:str='', **kwargs) -> base_model:
     max_tokens = 512
 
     api_supported = {
+        'gemini-2.5-pro': (gemini_api_model, dict(maxOutputTokens=12000)),
         'gemini': (gemini_api_model, dict(maxOutputTokens=max_tokens)),
         'claude': (claude_api_model, dict(max_tokens=max_tokens)),
         'gpt-4o': (openai_api_model, dict(max_completion_tokens=max_tokens)),
         'gpt-4': (openai_api_model, dict(max_completion_tokens=max_tokens)),
+        'o1': (openai_api_model, dict(max_completion_tokens=12000)),
+        'o3': (openai_api_model, dict(max_completion_tokens=12000)),
+        'o4-mini': (openai_api_model, dict(max_completion_tokens=12000)),
     }
     for modelpattern in api_supported:
         if modelpattern in modelpath:
@@ -414,11 +484,24 @@ def auto_model(modelpath:str, adapterpath:str='', **kwargs) -> base_model:
         'Idefics3ForConditionalGeneration': (base_model, dict(max_new_tokens=max_tokens, do_sample=False)),
         'AriaForConditionalGeneration': (aria, dict(max_new_tokens=max_tokens, do_sample=True, temperature=0.9)),
         'Phi3VForCausalLM': (phi3v, dict(max_new_tokens=max_tokens, do_sample=False)),
+        'Qwen2_5OmniModel': (qwen2d5omni, dict(max_new_tokens=max_tokens, do_sample=False, return_audio=False)),
+        'AyaVisionForConditionalGeneration': (base_model, dict(max_new_tokens=max_tokens, do_sample=True, temperature=0.3)),
+        'Gemma3ForConditionalGeneration': (base_model, dict(max_new_tokens=max_tokens, do_sample=False)),
+        'Phi4MMForCausalLM': (phi4m, dict(max_new_tokens=max_tokens, do_sample=False)),
+        'Llama4ForConditionalGeneration': (base_model, dict(max_new_tokens=max_tokens)),
+        'Mistral3ForConditionalGeneration': (base_model, dict(max_new_tokens=max_tokens, do_sample=True, temperature=0.15)),
+        'KimiVLForConditionalGeneration': (use_auto, dict(max_new_tokens=max_tokens, do_sample=True, temperature=0.2)),
+        'Llama4ForConditionalGeneration': (base_model, dict(max_new_tokens=max_tokens)),
+        'HCXVisionForCausalLM': (hyperclovax, dict(max_length=8192, do_sample=True, top_p=0.6, temperature=0.5, repetition_penalty=1.0)),
     }
     cfg = AutoConfig.from_pretrained(modelpath, trust_remote_code=True)
     # exception case for pixtral model, because of the different format
     if isinstance(cfg, MistralConfig):
         return pixtral(None, modelpath, '', dict(max_tokens=max_tokens, temperature=0.35), **kwargs)
+    elif hasattr(cfg, 'language_config') and hasattr(cfg.language_config, 'architectures') and cfg.language_config.architectures[0] in base_supported:
+        arc_cls = cfg.language_config.architectures[0]
+        base_cls, gen_kw = base_supported[arc_cls]
+        return base_cls(arc_cls, modelpath, adapterpath, gen_kw, **kwargs)
     elif hasattr(cfg, 'architectures') and cfg.architectures[0] in base_supported:
         arc_cls = cfg.architectures[0]
         base_cls, gen_kw = base_supported[arc_cls]
