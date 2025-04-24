@@ -1,0 +1,9 @@
+xlsxwriter
+transformers
+accelerate
+pandas
+torch
+huggingface_hub
+py3langid
+openpyxl
+numpy==1.26.4
